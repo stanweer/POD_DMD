@@ -4,6 +4,7 @@
 #include <Spectra/GenEigsSolver.h>
 #include <Spectra/SymEigsSolver.h>
 
+
 // * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
 
 int main(int argc, char *argv[])
@@ -27,16 +28,41 @@ int main(int argc, char *argv[])
     
     word fieldName(PODDict.lookup("fieldName"));
     label numberOfModes(readLabel(PODDict.lookup("numberOfModes")));
+    word cellSetName(PODDict.lookupOrDefault<word>("cellSetName", ""));
     
-    word cellSetName(PODDict.lookup("cellSetName"));
-    const cellSet PODCellSet(mesh,cellSetName);
-    const labelList& PODCells = PODCellSet.toc();
+    //word cellSetName(PODDict.lookup("cellSetName"));
+    //const cellSet PODCellSet(mesh,cellSetName);
+    //const labelList& PODCells = PODCellSet.toc();
+    
+    labelList PODCells; 
+    label np;
 
     
     // Get time directories and matrix dimensions
     const instantList timeDirs = timeSelector::select0(runTime, args);
     label nt = timeDirs.size();
-    label np = PODCells.size();
+ 
+
+    if (cellSetName.empty())
+    {
+        // Use all cells in the mesh
+        PODCells.resize(mesh.nCells());
+        forAll(PODCells, i)
+        {
+            PODCells[i] = i;
+        }
+        np = mesh.nCells();
+        Info << "No cellSet specified, performing POD on entire domain: " << np << " cells" << endl;
+    }
+    
+    else
+    {
+        cellSet PODCellSet(mesh, cellSetName);
+        labelList tempPODCells = PODCellSet.toc();
+        PODCells.transfer(tempPODCells);
+        np = PODCells.size();
+        Info << "Performing POD on cellSet '" << cellSetName << "': " << np << " cells" << endl;
+    }
     
     
     if (nt == 0 || np == 0)
@@ -93,17 +119,15 @@ int main(int argc, char *argv[])
     // Compute eigenvalues and eigenvectors using Spectra
     Spectra::DenseSymMatProd<double> op(coMatrix);
     label ncv = min(nt, max(2 * numberOfModes, numberOfModes + 10)); // Dynamic ncv
-    Spectra::SymEigsSolver<double, Spectra::LARGEST_ALGE, Spectra::DenseSymMatProd<double>> eigs(&op, numberOfModes, ncv);
+    Spectra::SymEigsSolver<Spectra::DenseSymMatProd<double>> eigs(op, numberOfModes, ncv);
     
-   
     eigs.init();
-    eigs.compute(1000, 1e-10, Spectra::LARGEST_ALGE);
-  
+    eigs.compute(Spectra::SortRule::LargestAlge);
 
     Eigen::VectorXd evalues;
     Eigen::MatrixXd evectors;
     
-    if (eigs.info() == Spectra::SUCCESSFUL)
+    if (eigs.info() == Spectra::CompInfo::Successful)
     {
         evalues = eigs.eigenvalues();
         evectors = eigs.eigenvectors();
@@ -127,9 +151,6 @@ int main(int argc, char *argv[])
         }
     }
     Info << "Eigenvalues written to Eigenvalues.dat" << endl;
-    
-   
-    
 
     // Write eigenvectors
     {
@@ -148,8 +169,7 @@ int main(int argc, char *argv[])
             vecfile << nl;
         }
     }
-    Info << "Eigenvectors written to Eigenvectors.dat" << endl;
-    
+    Info << "Eigenvectors written to Eigenvectors.dat" << endl;    
     
 
     // Compute and write POD modes
