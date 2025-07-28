@@ -1,6 +1,5 @@
 #include "fvCFD.H"
-#include "pisoControl.H"
-#include "SVD.H"
+#include "cellSet.H"
 #include <Eigen/Core>
 #include <Spectra/GenEigsSolver.h>
 #include <Spectra/SymEigsSolver.h>
@@ -28,27 +27,18 @@ int main(int argc, char *argv[])
     
     word fieldName(PODDict.lookup("fieldName"));
     label numberOfModes(readLabel(PODDict.lookup("numberOfModes")));
+    
+    word cellSetName(PODDict.lookup("cellSetName"));
+    const cellSet PODCellSet(mesh,cellSetName);
+    const labelList& PODCells = PODCellSet.toc();
 
     
-    volScalarField PODField
-    (
-        IOobject
-        (
-            fieldName,
-            runTime.timeName(),
-            mesh,
-            IOobject::MUST_READ,
-            IOobject::NO_WRITE
-        ),
-        mesh
-    );
-
     // Get time directories and matrix dimensions
     const instantList timeDirs = timeSelector::select0(runTime, args);
     label nt = timeDirs.size();
-    label np = PODField.size();
+    label np = PODCells.size();
     
-
+    
     if (nt == 0 || np == 0)
     {
         FatalErrorInFunction
@@ -72,9 +62,8 @@ int main(int argc, char *argv[])
     {
         runTime.setTime(timeDirs[timeI], timeI);
         Info << "Reading field at time = " << runTime.timeName() << endl;
-
-
-        volScalarField snapshotField
+        
+        volScalarField PODField
         (
             IOobject
             (
@@ -87,26 +76,29 @@ int main(int argc, char *argv[])
             mesh
         );
         
-        M.col(timeI) = Eigen::Map<const Eigen::VectorXd>(snapshotField.internalField().begin(), np);
-
         
-       /* forAll(snapshotField, i)
+        forAll(PODCells, i)
         {
-            M(i, timeI) = snapshotField[i];
-        }*/
+            M(i, timeI) = PODField[PODCells[i]];
+           
+        }
     }
 
-    // Compute correlation matrix
+    
     Eigen::MatrixXd coMatrix = M.transpose() * M;
     Info << "Correlation matrix computed: " << nt << " x " << nt << endl;
+    
+    
 
     // Compute eigenvalues and eigenvectors using Spectra
     Spectra::DenseSymMatProd<double> op(coMatrix);
     label ncv = min(nt, max(2 * numberOfModes, numberOfModes + 10)); // Dynamic ncv
     Spectra::SymEigsSolver<double, Spectra::LARGEST_ALGE, Spectra::DenseSymMatProd<double>> eigs(&op, numberOfModes, ncv);
     
+   
     eigs.init();
     eigs.compute(1000, 1e-10, Spectra::LARGEST_ALGE);
+  
 
     Eigen::VectorXd evalues;
     Eigen::MatrixXd evectors;
@@ -135,6 +127,9 @@ int main(int argc, char *argv[])
         }
     }
     Info << "Eigenvalues written to Eigenvalues.dat" << endl;
+    
+   
+    
 
     // Write eigenvectors
     {
@@ -154,6 +149,8 @@ int main(int argc, char *argv[])
         }
     }
     Info << "Eigenvectors written to Eigenvectors.dat" << endl;
+    
+    
 
     // Compute and write POD modes
     for (label modeI = 0; modeI < numberOfModes; ++modeI)
@@ -170,7 +167,7 @@ int main(int argc, char *argv[])
                 IOobject::AUTO_WRITE
             ),
             mesh,
-            dimensionedScalar(modeName, PODField.dimensions(), Zero)
+            dimensionedScalar(modeName, dimVelocity, Zero)
         );
 
         // Compute mode
@@ -178,10 +175,11 @@ int main(int argc, char *argv[])
         modeVec.normalize();
 
         
-        forAll(mode, i)
+        forAll(PODCells, i)
         {
-            mode[i] = modeVec(i);
+            mode[PODCells[i]] = modeVec(i);
         }
+
 
         
         mode.write();
