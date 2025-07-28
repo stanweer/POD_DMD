@@ -86,12 +86,14 @@ int main(int argc, char *argv[])
             ),
             mesh
         );
+        
+        M.col(timeI) = Eigen::Map<const Eigen::VectorXd>(snapshotField.internalField().begin(), np);
 
         
-        forAll(snapshotField, i)
+       /* forAll(snapshotField, i)
         {
             M(i, timeI) = snapshotField[i];
-        }
+        }*/
     }
 
     // Compute correlation matrix
