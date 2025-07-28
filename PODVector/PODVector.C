@@ -1,4 +1,5 @@
 #include "fvCFD.H"
+#include "cellSet.H"
 #include <Eigen/Core>
 #include <Spectra/GenEigsSolver.h>
 #include <Spectra/SymEigsSolver.h>
@@ -26,30 +27,44 @@ int main(int argc, char *argv[])
     
     word fieldName(PODDict.lookup("fieldName"));
     label numberOfModes(readLabel(PODDict.lookup("numberOfModes")));
+    word cellSetName(PODDict.lookupOrDefault<word>("cellSetName", ""));
+    
+    
+    labelList PODCells;
+    label nCells; 
 
     
-    volVectorField PODField
-    (
-        IOobject
-        (
-            fieldName,
-            runTime.timeName(),
-            mesh,
-            IOobject::MUST_READ,
-            IOobject::NO_WRITE
-        ),
-        mesh
-    );
-
-    
+    // Get time directories and matrix dimensions
     const instantList timeDirs = timeSelector::select0(runTime, args);
     label nt = timeDirs.size();
-    const label nCells = PODField.size();
-    const label np = 3 * nCells;
+ 
+
+    if (cellSetName.empty())
+    {
+        // Use all cells in the mesh
+        PODCells.resize(mesh.nCells());
+        forAll(PODCells, i)
+        {
+            PODCells[i] = i;
+        }
+        nCells = mesh.nCells();
+        Info << "No cellSet specified, performing POD on entire domain: " << nCells << " cells" << endl;
+    }
+    
+    else
+    {
+        cellSet PODCellSet(mesh, cellSetName);
+        labelList tempPODCells = PODCellSet.toc();
+        PODCells.transfer(tempPODCells);
+        nCells = PODCells.size();
+        Info << "Performing POD on cellSet '" << cellSetName << "': " << nCells << " cells" << endl;
+    }
+    
+    
 
     
   
-    if (nt == 0 || np == 0)
+    if (nt == 0 || nCells == 0)
     {
         FatalErrorInFunction
             << "No time directories or empty field found!" << exit(FatalError);
@@ -63,9 +78,9 @@ int main(int argc, char *argv[])
             << "Invalid numberOfModes (" << numberOfModes << ")!" << exit(FatalError);
     }
 
-    // Initialize snapshot matrix (3*np for x, y, z components)
-    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(np, nt);
-    Info << "Snapshot matrix initialized: " << np << " x " << nt << endl;
+    // Initialize snapshot matrix (3*nCells for x, y, z components)
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(3*nCells, nt);
+    Info << "Snapshot matrix initialized: " << 3*nCells << " x " << nt << endl;
 
     
     forAll(timeDirs, timeI)
@@ -90,11 +105,11 @@ int main(int argc, char *argv[])
         
 
       
-        forAll(PODField, i)
+        forAll(PODCells, i)
         {
-            M(i, timeI) = PODField[i].x();
-            M(nCells + i, timeI) = PODField[i].y();
-            M(2 * nCells + i, timeI) = PODField[i].z();
+            M(i, timeI) = PODField[PODCells[i]].x();
+            M(nCells + i, timeI) = PODField[PODCells[i]].y();
+            M(2 * nCells + i, timeI) = PODField[PODCells[i]].z();
         }
         
     }
@@ -108,18 +123,20 @@ int main(int argc, char *argv[])
     // Compute eigenvalues and eigenvectors using Spectra
     Spectra::DenseSymMatProd<double> op(coMatrix);
     label ncv = min(nt, max(2 * numberOfModes, numberOfModes + 10)); // Dynamic ncv
-    Spectra::SymEigsSolver<double, Spectra::LARGEST_ALGE, Spectra::DenseSymMatProd<double>> eigs(&op, numberOfModes, ncv);
+    Spectra::SymEigsSolver<Spectra::DenseSymMatProd<double>> eigs(op, numberOfModes, ncv);
     
     eigs.init();
-    eigs.compute(1000, 1e-10, Spectra::LARGEST_ALGE);
+    eigs.compute(Spectra::SortRule::LargestAlge);
 
     Eigen::VectorXd evalues;
     Eigen::MatrixXd evectors;
     
-    if (eigs.info() == Spectra::SUCCESSFUL)
+    if (eigs.info() == Spectra::CompInfo::Successful)
     {
         evalues = eigs.eigenvalues();
         evectors = eigs.eigenvectors();
+        
+        // Normalize eigenvalues
         evalues = evalues / evalues.sum();
     }
     else
@@ -173,20 +190,21 @@ int main(int argc, char *argv[])
                 IOobject::AUTO_WRITE
             ),
             mesh,
-            dimensionedVector(modeName, PODField.dimensions(), Zero)
+            dimensionedVector(modeName, dimVelocity, Zero)
         );
 
 
         Eigen::VectorXd modeVec = M * evectors.col(modeI);
         modeVec.normalize();
 
-
-        forAll(mode, i)
+        
+        forAll(PODCells, i)
         {
-            mode[i].x() = modeVec(i);
-            mode[i].y() = modeVec(nCells + i);
-            mode[i].z() = modeVec(2 * nCells + i);
+            mode[PODCells[i]].x() = modeVec(i);
+            mode[PODCells[i]].y() = modeVec(nCells + i);
+            mode[PODCells[i]].z() = modeVec(2 * nCells + i);
         }
+
 
 
         mode.write();
